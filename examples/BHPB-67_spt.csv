@@ -1,0 +1,5 @@
+depth_top_m,depth_bot_m,N,status
+1.50,1.95,31,actual
+3.00,3.24,167,refusal
+4.50,4.88,130,refusal
+6.00,6.25,150,refusal
