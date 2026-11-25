@@ -87,6 +87,42 @@ against 12 s, because of the mode correction.
 
 ---
 
+## Fusion with penetration soundings and the neural estimator (November 2026)
+
+Two additions link the surface-wave profile to a light dynamic penetration sounding (Kunzelstab,
+KPT) driven at the same foundation.
+
+**Bayesian fusion, `sasw/fusion.py`.** The sounding is treated as a point test beside an area test.
+The velocity converted from the blow counts in layer *k* is the layer velocity plus an offset shared
+by the whole sounding plus increment noise, `y_k = m_k + b + e_k`, with `b ~ N(0, tau^2)` and
+`e_k ~ N(0, sigma_w^2 / n_k)`. With the offset marginalised, a sounding constrains the shape of the
+profile strongly and its level weakly. `fusion.fit(wlc, vc, sigma, P, kpt=(z, ln_vs))` returns the
+MAP profile, its Laplace standard deviation and the site offset, and `fusion.predictive(...)` gives
+a conflict probability for the sounding under the surface-wave posterior. On 50 sounded foundations
+the learned values were `tau = 0.34` and `sigma_w = 0.30` in log terms.
+
+**Neural fusion estimator, `estimator/`.** A network trained only on simulated physics returns the
+mean and standard deviation of ln Vs in 20 layers from a dispersion curve and an optional sounding,
+in milliseconds.
+
+| File | Purpose |
+|---|---|
+| `estimator/sim.py` | Prior over ground profiles and Rayleigh forward model: `python sim.py N out.npz [workers]` |
+| `estimator/train.py` | Training with the SASW and KPT observation models: `python train.py data.npz real_stats.json out_dir [steps] [batch]` |
+| `estimator/train_b.py` | Sensitivity variant with a level error on the surface-wave curve |
+| `estimator/apply.py` | Inference on gridded inputs |
+| `estimator/real_stats.json` | Wavelength coverage and uncertainty statistics of field curves, used by the observation model (no site names) |
+| `estimator/model/` | Trained network (residual MLP, 9.6 M parameters, 1.2 M simulated profiles) and its test metrics |
+
+Training needs PyTorch and a GPU (26 minutes on one card); the simulator needs `disba`. On simulated
+foundations the error in ln Vs is 0.13 in the top 2 m and the 95 % intervals contain the truth in
+94 to 96 % of cases. On field data the estimator matches the inversion of this package and does not
+exceed it; its value is the stated uncertainty, the fusion and the speed.
+
+For everyday use, the desktop program **VsFuse** (https://github.com/Sompote/VSFuse) carries a Rust
+port of the v2 front end and this network, and goes from raw records to a founding-level decision
+without Python.
+
 ## Why this exists
 
 Two-receiver SASW is a phase-difference measurement: the whole Vs profile
