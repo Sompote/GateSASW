@@ -1,0 +1,2 @@
+{"run_select": "all", "qc_mode": "consensus", "adaptive_bins": true,
+ "inv_mode": "graded", "forward": "effective", "conservative_deep": true}

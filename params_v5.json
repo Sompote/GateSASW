@@ -1,0 +1,9 @@
+{
+ "run_select": "all",
+ "qc_mode": "consensus",
+ "adaptive_bins": true,
+ "unwrap_mode": "chain",
+ "inv_mode": "graded",
+ "forward": "effective",
+ "conservative_deep": true
+}

@@ -79,7 +79,7 @@ def main():
     print("=" * 60)
 
     # 1. detect records
-    tests = auto_detect_tests(data_dir)
+    tests = auto_detect_tests(data_dir, P.get("run_select", "first"))
     if not tests:
         sys.exit(f"no record folders (H<d>m<F|R>*.trf/Run*/ASCII) found in "
                  f"{data_dir}")
@@ -89,6 +89,14 @@ def main():
     # 2. dispersion extraction with QC
     print("  quality control:")
     wl, vph, sp, tr, report = collect_dispersion(data_dir, tests, P)
+
+    from sasw import coherent_share
+    cshare, clow = coherent_share(data_dir, tests, P)
+    print(f"  coherent share of the records: {cshare:.2f}"
+          + ("  ** LOW-COHERENCE SITE: profile is of reduced reliability **"
+             if clow else ""))
+    report.append(f"coherent share {cshare:.2f}"
+                  + (" (LOW-COHERENCE SITE)" if clow else ""))
 
     # 3. composite curve
     wlc, vc, sig = build_composite(wl, vph, tr, P)
@@ -102,8 +110,14 @@ def main():
 
     # 4. unconstrained inversion
     print("  inversion (dispersion data only):")
-    thick, vs, rms = invert(wlc, vc, sig, P)
-    print(f"    fit RMS = {rms*100:.1f}%, {len(vs)} layers x {P['fine_h']} m")
+    if P.get("forward") == "effective":
+        from sasw.effective import bin_spacing
+        from sasw.inversion import invert_effective
+        thick, vs, rms, _, _ = invert_effective(wlc, vc, sig,
+                                                bin_spacing(wl, sp, wlc), P)
+    else:
+        thick, vs, rms = invert(wlc, vc, sig, P)
+    print(f"    fit RMS = {rms*100:.1f}%, {len(vs)} layers (top {P['fine_h']} m)")
     export_profile(out / "vs_profile.csv", thick, vs)
 
     # 5. optional SPT: correlation selection + joint inversion

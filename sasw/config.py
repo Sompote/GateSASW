@@ -38,6 +38,25 @@ DEFAULTS = {
     "vs_max": 1200.0,
     "rough_weight": 40.0,          # on mean squared d(ln Vs)
     "resolution_divisor": 2.5,     # z_res = lambda_max / this
+    # --- revisions (Nov 2026; defaults reproduce the original pipeline) ---
+    "run_select": "first",         # first | last | all  (all = V1 run recovery)
+    "qc_mode": "legacy",           # legacy | consensus (V3)
+    "adaptive_bins": False,        # composite bin count follows point count
+    "inv_mode": "legacy",          # legacy | graded (V2: graded layers, L-BFGS-B)
+    "h_growth": 1.15,              # graded layers: thickness growth per layer
+    "h_max": 2.0,                  # graded layers: maximum thickness (m)
+    "model_div": 2.0,              # graded model depth = lambda_max / model_div
+    "unwrap_mode": "legacy",       # legacy | chain (V5 cross-spacing unwrapping)
+    "chain_anchor_lo": 0.25,       # anchor phase range [-lo, 1-lo) cycle
+    "chain_ambiguous": 0.35,       # flag a segment above this residual (cycle)
+    "chain_strict": False,         # reject flagged records instead of keeping
+    "top_divisor": 3.0,
+    "irf": False,                  # impulse-response gating of Hxy before unwrapping
+    "irf_vmin": 60.0,              # slowest admissible wave: gate ends at d / irf_vmin
+    "irf_taper_s": 0.010, "irf_taper_frac": 0.25, "irf_lead_s": 0.004,
+    "coh_share_min": 0.30,         # site flagged low-coherence below this share            # z_min = lambda_min / this
+    "forward": "fundamental",      # fundamental | effective (V4 mode-corrected)
+    "eff_modes": 4, "eff_iters": 3, "eff_rmin": 0.7, "eff_rmax": 1.6,
     # joint inversion
     "target_r2": 0.95,
     "wp_sweep": [0.0, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0],

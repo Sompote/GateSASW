@@ -29,6 +29,64 @@ raw Hxy / coherence spectra  (two receivers, F and R shots, all spacings)
 
 ---
 
+## Version 2 — revised pipeline (November 2026)
+
+Version 2 adds six options. **All defaults reproduce version 1**, so existing
+results do not change unless you opt in. `params_v6.json` selects the full
+revised pipeline:
+
+```bash
+python run_sasw.py /path/to/MY_SITE --params params_v6.json
+python batch_run.py /path/to/PROJECT_ROOT --out batch_results --params params_v6.json
+```
+
+| Option | Values | What it does |
+|---|---|---|
+| `run_select` | `first` (v1) / `last` / `all` | `all` treats every `Run*` folder that holds an ASCII export as a candidate record. v1 opened the first run only, which is often an aborted one. |
+| `unwrap_mode` | `legacy` (v1) / `chain` | **Cross-spacing phase unwrapping** (`sasw/chain.py`). The phase of a record is known only modulo 2π, and a single record cannot fix its own cycle count. At a given frequency the phase scales with receiver spacing, so each shorter spacing predicts the phase of the next and fixes its integer cycle count. The shortest spacing is anchored by requiring its phase to lie in [−0.25, 0.75) cycle at the start of its coherent band. Requires `qc_mode: consensus`. |
+| `qc_mode` | `legacy` (v1) / `consensus` | Each spacing contributes the forward/reverse phase average of its best-agreeing run pair; spacings whose curves agree within `cross_dev` are linked and the largest connected group is accepted. |
+| `inv_mode` | `legacy` (v1) / `graded` | Layers growing from `fine_h` by `h_growth` to `h_max`, model depth λmax/`model_div`, L-BFGS-B. |
+| `forward` | `fundamental` (v1) / `effective` | **Mode-corrected forward model** (`sasw/effective.py`): the two-receiver test measures an apparent velocity that mixes Rayleigh modes; the model computes it by modal superposition for receivers at d and 2d and corrects the data by a damped fixed point. |
+| `rough_weight` | 40 (v1) / 400 | Smoothing weight. 400 is the value at which the median normalised misfit over a 164-site dataset reaches 1 (discrepancy principle). |
+
+Also new:
+
+- **Resolved depth window**: `resolution_window()` returns `(z_min, z_res)` with
+  `z_min = λmin/3`; above `z_min` the profile is an upward extrapolation.
+- **Record-quality flag**: `coherent_share()` returns the fraction of the
+  spectrum above 5 Hz that passes the coherence mask, averaged over a site's
+  records, and flags the site as low-coherence below `coh_share_min` (0.30).
+  The flag is advisory and does not change the profile.
+- **Penetration-constrained inversion**: `inversion.invert_joint()` adds a
+  penetration-test prior with weight `w_p`. Its result is *not* independent
+  of the penetration data and should be reported as such.
+- **Optional impulse-response gating** (`irf: true`, `phase.irf_gate`): works
+  on synthetic data but gave no gain on field records; off by default.
+
+`params_v4.json` and `params_v5.json` are intermediate configurations kept
+for the ablation study (without cross-spacing unwrapping, and without the
+revised smoothing weight).
+
+### What changed in practice
+
+On 164 bridge-foundation sites, version 2 processed every site (159 before),
+raised the share of forward/reverse pairs agreeing within 20 % from 35 % to
+69 %, reduced single-spacing sites from 33 to 4, and raised the median
+resolution depth from 3.1 m to 6.7 m. Run time is about 100 s per site
+against 12 s, because of the mode correction.
+
+### Known limits
+
+- The cross-spacing chain depends on its anchor: adding one cycle to the
+  shortest spacing keeps the whole chain self-consistent. The anchor rule
+  assumes f·d/V < 0.75 at the start of the coherent band, which can fail in
+  very soft ground.
+- A log message `cycle count ambiguous` marks a segment more than 0.35 cycle
+  from its prediction; it is common and is a warning, not a rejection.
+- The mode-corrected model is far-field modal superposition (no body waves).
+
+---
+
 ## Why this exists
 
 Two-receiver SASW is a phase-difference measurement: the whole Vs profile
@@ -255,6 +313,8 @@ sasw/
   composite.py       trust-weighted composite curve (Stage C)
   forward.py         Thomson–Haskell forward model via disba (Stage D)
   inversion.py       regularized inversion, resolution depth, joint inversion
+  chain.py           cross-spacing phase unwrapping (v2)
+  effective.py       apparent two-receiver velocity by modal superposition (v2)
   correlations.py    19 Vs–N equations + site-appropriate selection
   plots.py           result figures
 examples/            example SPT CSVs

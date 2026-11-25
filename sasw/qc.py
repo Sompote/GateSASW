@@ -17,7 +17,8 @@ from itertools import product
 from scipy.stats import spearmanr
 
 from .io import read_record
-from .phase import process_phase, phase_to_dispersion
+from .phase import (process_phase, process_phase_segmented,
+                    phase_to_dispersion)
 
 
 def record_quality(wl, vph, f, P):
@@ -60,6 +61,12 @@ def average_pair(fD, rD, spacing, P):
 
 
 def collect_dispersion(data_dir, tests, P, log=print):
+    if P.get("qc_mode", "legacy") == "consensus":
+        return collect_dispersion_consensus(data_dir, tests, P, log)
+    return collect_dispersion_legacy(data_dir, tests, P, log)
+
+
+def collect_dispersion_legacy(data_dir, tests, P, log=print):
     """Run the full acceptance hierarchy. Returns (wl, vph, spacing, trust)
     arrays plus a QC report list."""
     report = []
@@ -72,7 +79,11 @@ def collect_dispersion(data_dir, tests, P, log=print):
     for folder, spacing, direction in tests:
         try:
             freq, real, imag, coh = read_record(data_dir, folder)
-            phase = process_phase(freq, real, imag)
+            if P.get("unwrap_mode", "legacy") == "segmented":
+                phase = process_phase_segmented(freq, real, imag, coh,
+                                                spacing, P)
+            else:
+                phase = process_phase(freq, real, imag)
             groups.setdefault(spacing, {}).setdefault(direction, []).append(
                 (freq, phase, coh, folder))
         except Exception as e:
@@ -244,3 +255,151 @@ def collect_dispersion(data_dir, tests, P, log=print):
     sp = np.concatenate([np.full(len(k[1]), k[0]) for k in kept])
     tr = np.concatenate([np.full(len(k[1]), k[3]) for k in kept])
     return wl, vph, sp, tr, report
+
+
+def collect_dispersion_consensus(data_dir, tests, P, log=print):
+    """Revised acceptance: F/R averaging + cross-spacing consensus.
+
+    Field evidence (164 sites): forward and reverse phases agree at
+    lambda/d >= 2 but drift apart smoothly as frequency rises, the
+    signature of an antisymmetric receiver/coupling phase error that the
+    F/R average is designed to cancel (Nazarian & Stokoe 1984). The legacy
+    20 % F/R gate therefore discards records the average can repair, and
+    sites with no passing pair end up with *unrestricted* deep data.
+
+    Here every spacing contributes one candidate curve: the F/R phase
+    average of the best-agreeing run pair (or the single direction when
+    only one passes Gate 1). Candidates are linked when their curves agree
+    within cross_dev over their common wavelength range; the largest
+    connected group (ties: lowest mean F/R disagreement) is accepted.
+    Trust: 1.0 if F/R agree within fr_agree, 1.5 if averaged but
+    disagreeing, 2.0 if single-direction. A site whose group has a single
+    member is flagged 'unvalidated'. z_res follows from the accepted
+    group only, so depth is never set by data no other spacing confirms.
+    """
+    report = []
+
+    def _log(msg):
+        report.append(msg)
+        log("    " + msg)
+
+    resolved = None
+    if P.get("unwrap_mode", "legacy") == "chain":
+        from .chain import chain_phases
+        resolved = chain_phases(data_dir, tests, P, _log)
+    groups = {}
+    for folder, spacing, direction in tests:
+        try:
+            if resolved is not None:
+                if folder not in resolved:
+                    _log(f"{folder}: REJECTED, no coherent segment")
+                    continue
+                freq, phase, coh = resolved[folder]
+            else:
+                freq, real, imag, coh = read_record(data_dir, folder)
+                phase = process_phase(freq, real, imag)
+            wl, vph, f = phase_to_dispersion(freq, phase, coh, spacing, P)
+            n, rho = record_quality(wl, vph, f, P)
+            if n >= P["min_pts"] and rho >= P["spearman_min"]:
+                groups.setdefault(spacing, {}).setdefault(direction, []).append(
+                    ((freq, phase, coh, folder), wl, vph, rho, n))
+            else:
+                _log(f"{folder}: REJECTED gate 1 (n={n}, rho={rho:+.2f})")
+        except Exception as e:
+            _log(f"{folder}: read error {e}")
+
+    cands = {}
+    for spacing, dirs in sorted(groups.items()):
+        if "F" in dirs and "R" in dirs:
+            best = None
+            for a in dirs["F"]:
+                for b in dirs["R"]:
+                    dis = fr_disagreement(a[1], a[2], b[1], b[2])
+                    if best is None or dis < best[0]:
+                        best = (dis, a, b)
+            dis, a, b = best
+            wl, vph, _ = average_pair(a[0], b[0], spacing, P)
+            if len(wl) >= P["min_pts"]:
+                trust = (P["trust_avg"] if dis <= P["fr_agree"]
+                         else P["trust_validated"])
+                cands[spacing] = (wl, vph, trust, dis,
+                                  f"F/R avg {a[0][3]}+{b[0][3]} "
+                                  f"(F/R {dis*100:.0f}%)")
+                continue
+        recs = [r for d in dirs.values() for r in d]
+        r = max(recs, key=lambda x: (x[3], x[4]))
+        cands[spacing] = (r[1], r[2], P["trust_unverified"], np.nan,
+                          f"{r[0][3]} single direction")
+
+    sp = sorted(cands)
+    adj = {s: set() for s in sp}
+    for i, s1 in enumerate(sp):
+        for s2 in sp[i + 1:]:
+            dev = overlap_dev(cands[s1][0], cands[s1][1],
+                              cands[s2][0], cands[s2][1])
+            if np.isfinite(dev) and dev <= P["cross_dev"]:
+                adj[s1].add(s2)
+                adj[s2].add(s1)
+    comps, seen = [], set()
+    for s in sp:
+        if s in seen:
+            continue
+        stack, comp = [s], set()
+        while stack:
+            x = stack.pop()
+            if x in comp:
+                continue
+            comp.add(x)
+            stack.extend(adj[x] - comp)
+        seen |= comp
+        comps.append(sorted(comp))
+
+    def key(c):
+        dis = [cands[s][3] for s in c if np.isfinite(cands[s][3])]
+        return (len(c), -(np.mean(dis) if dis else 9.0))
+    if not comps:
+        raise RuntimeError("all records rejected by QC")
+    best = max(comps, key=key)
+    if len(best) == 1:
+        # no two spacings agree: keep the best-agreeing F/R pair alone
+        best = [min(sp, key=lambda s: (np.nan_to_num(cands[s][3], nan=9.0),
+                                        cands[s][2]))]
+        _log(f"UNVALIDATED site: no two spacings agree; kept d={best[0]:g}")
+    for s in sp:
+        if s not in best:
+            _log(f"d={s:g}: REJECTED, outside consensus group "
+                 f"[{cands[s][4]}]")
+    kept = [(s, cands[s][0], cands[s][1], cands[s][2], cands[s][4])
+            for s in best]
+    for s, wl, vph, trust, label in kept:
+        _log(f"d={s:>4g} m: {len(wl):4d} pts, lambda [{wl.min():5.1f}-"
+             f"{wl.max():5.1f}] m, trust x{trust:.1f}  [{label}]")
+    wl = np.concatenate([k[1] for k in kept])
+    vph = np.concatenate([k[2] for k in kept])
+    spa = np.concatenate([np.full(len(k[1]), k[0]) for k in kept])
+    tr = np.concatenate([np.full(len(k[1]), k[3]) for k in kept])
+    return wl, vph, spa, tr, report
+
+
+def coherent_share(data_dir, tests, P):
+    """Record-quality indicator: the mean, over all records of a site, of
+    the fraction of the spectrum above 5 Hz whose coherence passes the mask
+    threshold. It uses the raw coherence only (no phase, no inversion).
+
+    On the 164-site dataset its quartiles are 0.30 / 0.36 / 0.43, and the
+    lowest quartile is the only site-quality indicator, of some twenty
+    tested, that predicts poorer agreement with independent penetration
+    data (permutation p = 0.001-0.002 for removing the 10-13 least coherent
+    of 51 soundings). P["coh_share_min"] (default 0.30) flags a site as
+    low-coherence; the flag is advisory and does not change the profile."""
+    from .phase import coherence_threshold
+    vals = []
+    for folder, spacing, _ in tests:
+        try:
+            freq, _, _, coh = read_record(data_dir, folder)
+        except Exception:
+            continue
+        vals.append(float(np.mean(coh[freq > 5] >=
+                                  coherence_threshold(spacing, P))))
+    share = float(np.mean(vals)) if vals else float("nan")
+    return share, bool(share < P.get("coh_share_min", 0.30))

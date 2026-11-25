@@ -14,16 +14,41 @@ from pathlib import Path
 RECORD_RE = re.compile(r"H(\d+(?:\.\d+)?)m([FR])", re.IGNORECASE)
 
 
-def auto_detect_tests(data_dir):
+def _valid_runs(p):
+    """Run* folders of a record that actually hold an ASCII export."""
+    return [r for r in sorted(p.glob("Run*"))
+            if (r / "ASCII" / "Hxysv00000.txt").exists()
+            and (r / "ASCII" / "Cxysv00000.txt").exists()]
+
+
+def auto_detect_tests(data_dir, run_select="first"):
     """Scan data_dir for record folders; return [(folder_name, spacing_m,
-    direction)] sorted by spacing."""
+    direction)] sorted by spacing.
+
+    run_select:
+      "first" - legacy: the first Run* folder, even if it is an aborted
+                run without an ASCII export (the record is then lost);
+      "last"  - the last Run* folder holding an ASCII export (the run the
+                operator finished on);
+      "all"   - every valid run becomes a candidate record; the per-record
+                gate then keeps the best-quality one per spacing+direction.
+    """
     tests = []
     for p in sorted(Path(data_dir).iterdir()):
         if not p.is_dir():
             continue
         m = RECORD_RE.search(p.name)
-        if m and list(p.glob("Run*")):
-            tests.append((p.name, float(m.group(1)), m.group(2).upper()))
+        if not (m and list(p.glob("Run*"))):
+            continue
+        sp, dr = float(m.group(1)), m.group(2).upper()
+        if run_select == "first":
+            tests.append((p.name, sp, dr))
+            continue
+        runs = _valid_runs(p)
+        if run_select == "last":
+            runs = runs[-1:]
+        for r in runs:
+            tests.append((f"{p.name}/{r.name}", sp, dr))
     tests.sort(key=lambda t: (t[1], t[2]))
     return tests
 
@@ -33,7 +58,8 @@ def read_file(data_dir, folder, filename):
     starting with 'Hz'). Guarantees all returned columns have equal length:
     a data line is kept only if it yields the same number of numeric fields
     as the first accepted data line."""
-    runs = sorted((Path(data_dir) / folder).glob("Run*"))
+    base = Path(data_dir) / folder
+    runs = [base] if base.name.startswith("Run") else sorted(base.glob("Run*"))
     if not runs:
         raise FileNotFoundError(f"no Run* folder in {folder}")
     path = runs[0] / "ASCII" / filename

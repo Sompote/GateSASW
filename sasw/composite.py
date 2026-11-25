@@ -5,10 +5,14 @@ from scipy.signal import savgol_filter
 
 
 def build_composite(wl, vph, trust, P):
+    nb = P["n_bins"]
+    if P.get("adaptive_bins"):
+        # at least ~4 points per bin on average, never fewer than 6 bins
+        nb = int(max(6, min(nb, len(wl) // 4)))
     bins = np.logspace(np.log10(wl.min() * 0.99), np.log10(wl.max() * 1.01),
-                       P["n_bins"] + 1)
+                       nb + 1)
     wlc, vc, sg = [], [], []
-    for j in range(P["n_bins"]):
+    for j in range(nb):
         m = (wl >= bins[j]) & (wl < bins[j + 1])
         if m.sum() < 2:
             continue
@@ -23,6 +27,8 @@ def build_composite(wl, vph, trust, P):
         sg.append(max(np.std(v[inl]), P["sigma_floor"] * med) *
                   np.mean(trust[m]))
     wlc, vc, sg = map(np.array, (wlc, vc, sg))
+    if len(wlc) < 4:
+        raise RuntimeError(f"composite too sparse ({len(wlc)} bins)")
     if len(vc) > 7:
         vc = savgol_filter(vc, 7, 2)
     return wlc, vc, sg

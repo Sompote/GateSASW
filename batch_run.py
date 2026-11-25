@@ -30,11 +30,15 @@ def find_sites(root):
     records, de-duplicated by basename. Canonical folders are preferred
     over hyperparameter-variant copies."""
     candidates = {}
+    from sasw.io import RECORD_RE
     for trf in sorted(Path(root).rglob("*.trf")):
-        d = trf.parent
-        if not list(d.glob("*.trf")):
+        # a record is a *folder* named H<spacing>m<F|R>...; every record
+        # folder also contains a setup.trf *file*, which must not count
+        if not trf.is_dir() or not RECORD_RE.search(trf.name):
             continue
-        candidates.setdefault(d.name, []).append(d)
+        d = trf.parent
+        if d not in candidates.get(d.name, []):
+            candidates.setdefault(d.name, []).append(d)
 
     def rank(path):
         s = str(path).lower()
@@ -49,9 +53,15 @@ def main():
     ap.add_argument("root")
     ap.add_argument("--out", default="batch_out")
     ap.add_argument("--conservative", action="store_true")
+    ap.add_argument("--params", default=None,
+                    help="JSON file overriding any default parameter "
+                         "(e.g. params_v6.json for the revised pipeline)")
     args = ap.parse_args()
 
     P = dict(DEFAULTS)
+    if args.params:
+        import json
+        P.update(json.loads(Path(args.params).read_text()))
     if args.conservative:
         P["conservative_deep"] = True
 
@@ -67,12 +77,20 @@ def main():
         site_out = out / name
         site_out.mkdir(exist_ok=True)
         try:
-            tests = auto_detect_tests(data_dir)
+            tests = auto_detect_tests(data_dir, P.get("run_select", "first"))
             wl, vph, sp, tr, report = collect_dispersion(
                 data_dir, tests, P, log=lambda m: None)
             wlc, vc, sig = build_composite(wl, vph, tr, P)
             zres = resolution_depth(wlc, P)
-            thick, vs, rms = invert(wlc, vc, sig, P)
+            if P.get("forward") == "effective":
+                from sasw.effective import bin_spacing
+                from sasw.inversion import invert_effective
+                thick, vs, rms, _, _ = invert_effective(
+                    wlc, vc, sig, bin_spacing(wl, sp, wlc), P)
+            else:
+                thick, vs, rms = invert(wlc, vc, sig, P)
+            from sasw import coherent_share
+            cshare, clow = coherent_share(data_dir, tests, P)
             profiles[name] = (thick, vs, zres)
 
             zi = np.concatenate([[0], np.cumsum(thick)])
@@ -103,7 +121,10 @@ def main():
             rows.append(dict(
                 site=name, n_records=len(tests),
                 lambda_max=round(wlc.max(), 1),
+                z_min=round(wlc.min() / P.get("top_divisor", 3.0), 2),
                 z_res=round(zres, 1), rms_pct=round(rms * 100, 1),
+                coherent_share=round(cshare, 2),
+                low_coherence=int(clow),
                 vs_surface=round(vs[0]),
                 vs_at_zres=round(profile_at(thick, vs, zres)),
                 vs_halfspace=round(vs[-1]),
@@ -114,13 +135,15 @@ def main():
             print(f"    FAILED: {e}")
             traceback.print_exc()
             rows.append(dict(site=name, n_records=0, lambda_max="",
-                             z_res="", rms_pct="", vs_surface="",
+                             z_min="", z_res="", rms_pct="",
+                             coherent_share="", low_coherence="",
+                             vs_surface="",
                              vs_at_zres="", vs_halfspace="", vsz_avg="",
                              error=str(e)))
 
     # summary CSV
-    cols = ["site", "n_records", "lambda_max", "z_res", "rms_pct",
-            "vs_surface", "vs_at_zres", "vs_halfspace", "vsz_avg"]
+    cols = ["site", "n_records", "lambda_max", "z_min", "z_res", "rms_pct",
+            "coherent_share", "low_coherence", "vs_surface", "vs_at_zres", "vs_halfspace", "vsz_avg"]
     with open(out / "summary.csv", "w") as f:
         f.write(",".join(cols) + "\n")
         for r in rows:
